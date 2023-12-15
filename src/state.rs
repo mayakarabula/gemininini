@@ -12,6 +12,8 @@ pub struct State {
     pub page_content: String,
     pub window_width: u32,
     pub window_height: u32,
+    pub content_lines: Vec<String>,
+    pub starting_line: usize,
 }
 
 struct Block {
@@ -100,6 +102,36 @@ impl State {
             page_content,
             window_width,
             window_height,
+            content_lines: Vec::new(),
+            starting_line: 0,
+        }
+    }
+
+    pub fn prepare_lines(&mut self) {
+        let lines: Vec<String> = self.page_content.lines().map(|s| s.to_string()).collect();
+        let mut deque: VecDeque<String> = VecDeque::from(lines);
+        self.content_lines.clear();
+
+        while let Some(line) = deque.pop_front() {
+            let mut index = 0;
+            let mut s = String::new();
+            let words: Vec<&str> = line.split_whitespace().collect();
+
+            while index < words.len() && s.as_str().width(&self) < self.window_width as usize {
+                s.push_str(words[index]);
+                s.push(' ');
+
+                index += 1;
+            }
+
+            if words.len() > index {
+                s = words.get(0..index - 1).unwrap().join(" ");
+                deque.push_front(words.get(index - 1..).unwrap().join(" "));
+            } else {
+                s = words.get(0..index).unwrap().join(" ");
+            }
+
+            self.content_lines.push(s);
         }
     }
 
@@ -111,6 +143,10 @@ impl State {
     pub fn update(&mut self, page_address: String, page_content: String) {
         self.page_address = page_address;
         self.page_content = page_content;
+    }
+
+    pub fn set_starting_line(&mut self, starting_line: usize) {
+        self.starting_line = starting_line;
     }
 
     pub fn draw(&self, pixels: &mut Pixels) {
@@ -125,36 +161,18 @@ impl State {
         block.draw_onto_pixels(pixels, start_y);
         start_y += font_height; // Move to the next vertical position
 
-        let mut deque: VecDeque<String> =
-            self.page_content.lines().map(|s| s.to_string()).collect();
-
-        // since we need to wrap the lines but the width of the glyphs is not the same for all letters
-        // we need to split the lines into smaller lines that fit the window width
-        while let Some(line) = deque.pop_front() {
-            let mut index = 0;
-            let mut s = String::new();
+        let mut index = 0;
+        let lines = self.content_lines.get(self.starting_line..).unwrap();
+        
+        while let Some(line) = lines.get(index) {
+            index += 1;
 
             if line.len() == 0 {
                 start_y += font_height;
                 continue;
             }
 
-            let words: Vec<&str> = line.split_whitespace().collect();
-
-            while index < words.len() && s.as_str().width(&self) < self.window_width as usize {
-                s.push_str(words[index]);
-                s.push(' ');
-                index += 1;
-            }
-
-            if words.len() > index {
-                s = words.get(0..index - 1).unwrap().join(" ");
-                deque.push_front(words.get(index - 1..).unwrap().join(" "));
-            } else {
-                s = words.get(0..index).unwrap().join(" ");
-            }
-
-            let block = s.to_string().as_str().draw_default(&self);
+            let block = line.to_string().as_str().draw_default(&self);
 
             block.draw_onto_pixels(pixels, start_y);
             start_y += font_height;

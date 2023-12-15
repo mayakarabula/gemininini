@@ -117,6 +117,8 @@ fn main() -> Result<(), pixels::Error> {
         window.inner_size().height / scale_factor,
     );
 
+    state.prepare_lines();
+
     let size = PhysicalSize::new(state.window_width, state.window_height);
 
     let mut pixels = {
@@ -188,6 +190,18 @@ fn main() -> Result<(), pixels::Error> {
                 state.set_address(address.clone());
             }
 
+            if input.key_pressed(VirtualKeyCode::Up) {
+                if state.starting_line > 0 {
+                    state.set_starting_line(state.starting_line - 1);
+                }
+            }
+
+            if input.key_pressed(VirtualKeyCode::Down) {
+                if state.starting_line < state.content_lines.len() {
+                    state.set_starting_line(state.starting_line + 1);
+                }
+            }
+
             if input.key_pressed(VirtualKeyCode::Return) {
                 eprintln!("fetching address: {address}");
                 let content = get_gemini_page_blocking(&Url::from_str(&address).unwrap()).unwrap();
@@ -207,6 +221,7 @@ fn main() -> Result<(), pixels::Error> {
                 state.resize(width / scale_factor, height / scale_factor);
             }
 
+            state.prepare_lines();
             window.request_redraw();
         }
     });
