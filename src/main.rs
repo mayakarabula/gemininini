@@ -16,7 +16,7 @@ mod font;
 mod state;
 
 use config::configure;
-use state::State;
+use state::{State, NORMAL_MODE, INSERT_MODE, LINK_MODE};
 use url::Url;
 
 use pixels::wgpu::BlendState;
@@ -177,7 +177,7 @@ fn main() -> Result<(), pixels::Error> {
                 return;
             }
             let text: Vec<TextChar> = input.text();
-            if !text.is_empty() {
+            if !text.is_empty() && state.mode == INSERT_MODE {
                 for ch in input.text() {
                     match ch {
                         TextChar::Char(ch) => address.push(ch),
@@ -190,15 +190,35 @@ fn main() -> Result<(), pixels::Error> {
                 state.set_address(address.clone());
             }
 
-            if input.key_pressed(VirtualKeyCode::Up) {
+            if input.key_pressed(VirtualKeyCode::Up) || 
+                ((input.key_pressed(VirtualKeyCode::K) && state.mode == NORMAL_MODE)) {
                 if state.starting_line > 0 {
                     state.set_starting_line(state.starting_line - 1);
                 }
             }
 
-            if input.key_pressed(VirtualKeyCode::Down) {
+            if input.key_pressed(VirtualKeyCode::Down) ||
+                ((input.key_pressed(VirtualKeyCode::J) && state.mode == NORMAL_MODE)) {
                 if state.starting_line < state.content_lines.len() {
                     state.set_starting_line(state.starting_line + 1);
+                }
+            }
+
+            if input.key_pressed(VirtualKeyCode::O) || input.key_pressed(VirtualKeyCode::I) {
+                if state.mode == NORMAL_MODE {
+                    state.set_mode(String::from(INSERT_MODE));
+                }
+            }
+
+            if input.key_pressed(VirtualKeyCode::F) {
+                if state.mode == NORMAL_MODE {
+                    state.set_mode(String::from(LINK_MODE));
+                }
+            }
+
+            if input.key_pressed(VirtualKeyCode::Escape) {
+                if state.mode != NORMAL_MODE {
+                    state.set_mode(String::from(NORMAL_MODE));
                 }
             }
 
@@ -208,6 +228,7 @@ fn main() -> Result<(), pixels::Error> {
                 eprintln!("content: {content}");
                 state.update(address.clone(), content);
                 address.clear();
+                state.set_mode(String::from(NORMAL_MODE));
             }
 
             // Resize the window.

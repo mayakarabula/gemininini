@@ -4,6 +4,10 @@ use std::collections::VecDeque;
 use crate::config::{Pixel, PIXEL_SIZE};
 use crate::font::{Font, WrappedFont};
 
+pub const NORMAL_MODE: &str = "normal";
+pub const INSERT_MODE: &str = "insert";
+pub const LINK_MODE: &str = "link";
+
 pub struct State {
     pub font: WrappedFont,
     pub foreground: Pixel,
@@ -14,6 +18,7 @@ pub struct State {
     pub window_height: u32,
     pub content_lines: Vec<String>,
     pub starting_line: usize,
+    pub mode: String,
 }
 
 struct Block {
@@ -104,6 +109,7 @@ impl State {
             window_height,
             content_lines: Vec::new(),
             starting_line: 0,
+            mode: String::from("normal"),
         }
     }
 
@@ -149,6 +155,10 @@ impl State {
         self.starting_line = starting_line;
     }
 
+    pub fn set_mode(&mut self, mode: String) {
+        self.mode = mode;
+    }
+
     pub fn draw(&self, pixels: &mut Pixels) {
         let mut start_y = 0;
         let font_height: usize = self.font.height();
@@ -163,7 +173,8 @@ impl State {
 
         let mut index = 0;
         let lines = self.content_lines.get(self.starting_line..).unwrap();
-        
+        let mut link_index = 0;
+
         while let Some(line) = lines.get(index) {
             index += 1;
 
@@ -172,15 +183,32 @@ impl State {
                 continue;
             }
 
-            let block = line.to_string().as_str().draw_default(&self);
+            let s = line.clone();
 
+            let block = s.to_string().as_str().draw_default(&self);
             block.draw_onto_pixels(pixels, start_y);
+
+            if line.starts_with("=>") {
+                if self.mode == LINK_MODE {
+                    let block = link_index.to_string().as_str().draw(&self, self.background, self.foreground);
+                    block.draw_onto_pixels(pixels, start_y);
+                }
+                link_index += 1;
+            }
+
             start_y += font_height;
 
-            if start_y + 2 * self.font.height() > self.window_height as usize {
+            if start_y + 3 * self.font.height() > self.window_height as usize {
                 break;
             }
         }
+
+        let block =
+            self.mode
+                .to_string()
+                .as_str()
+                .draw(&self, self.background, self.foreground);
+        block.draw_onto_pixels(pixels, self.window_height as usize - font_height);
     }
 
     pub(crate) fn set_address(&mut self, address: String) {
