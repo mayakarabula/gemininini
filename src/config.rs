@@ -7,7 +7,7 @@ use lexopt::{Arg, Parser, ValueExt};
 
 use std::iter::FromIterator;
 
-const CONFIG_FILE_PATH: &str = "/etc/tid/tid.config";
+const CONFIG_FILE_PATH: &str = "/etc/tid/gemininini.config";
 const DEFAULT_FONT_DIR: &str = "/etc/tid/fonts";
 const DEFAULT_FONT: &str = "cream12.uf2";
 

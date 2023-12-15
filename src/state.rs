@@ -11,6 +11,7 @@ pub struct State {
     pub page_address: String,
     pub page_content: String,
     pub window_width: u32,
+    pub window_height: u32,
 }
 
 struct Block {
@@ -23,16 +24,22 @@ impl Block {
         self.pixels.len() / self.height
     }
 
-    fn rows(&self) -> std::slice::ChunksExact<'_, Pixel> {
-        self.pixels.chunks_exact(self.width())
+    fn rows(&self) -> Option<std::slice::ChunksExact<'_, Pixel>> {
+        if self.width() == 0 {
+            return None;
+        }
+
+        Some(self.pixels.chunks_exact(self.width()))
     }
 
     fn draw_onto_pixels(self, pixels: &mut Pixels, start_y: usize) {
         let size = pixels.texture().size();
-        for (y, row) in self.rows().enumerate() {
-            let idx: usize = ((start_y + y) * size.width as usize) * PIXEL_SIZE;
-            let row_bytes = row.flatten();
-            pixels.frame_mut()[idx..idx + row_bytes.len()].copy_from_slice(row_bytes);
+        if let Some(rows) = self.rows() {
+            for (y, row) in rows.enumerate() {
+                let idx: usize = ((start_y + y) * size.width as usize) * PIXEL_SIZE;
+                let row_bytes = row.flatten();
+                pixels.frame_mut()[idx..idx + row_bytes.len()].copy_from_slice(row_bytes);
+            }
         }
     }
 }
@@ -65,11 +72,7 @@ impl Draw for &str {
                 for (xg, &cell) in row.iter().enumerate() {
                     let x = x0 + xg;
                     let idx = y * width + x;
-                    pixels[idx] = if cell {
-                        foreground
-                    } else {
-                        background
-                    };
+                    pixels[idx] = if cell { foreground } else { background };
                 }
             }
             x0 += g.width();
@@ -87,6 +90,7 @@ impl State {
         page_address: String,
         page_content: String,
         window_width: u32,
+        window_height: u32,
     ) -> Self {
         Self {
             font,
@@ -95,11 +99,13 @@ impl State {
             page_address,
             page_content,
             window_width,
+            window_height,
         }
     }
 
-    pub fn resize(&mut self, window_width: u32) {
+    pub fn resize(&mut self, window_width: u32, window_height: u32) {
         self.window_width = window_width;
+        self.window_height = window_height;
     }
 
     pub fn update(&mut self, page_address: String, page_content: String) {
@@ -108,17 +114,19 @@ impl State {
     }
 
     pub fn draw(&self, pixels: &mut Pixels) {
-        let lines: Vec<String> = self.page_content.lines().map(|s| s.to_string()).collect();
-
         let mut start_y = 0;
         let font_height: usize = self.font.height();
 
-        let block = self.page_address.to_string().as_str()
-            .draw(&self,  self.background, self.foreground);
+        let block =
+            self.page_address
+                .to_string()
+                .as_str()
+                .draw(&self, self.background, self.foreground);
         block.draw_onto_pixels(pixels, start_y);
         start_y += font_height; // Move to the next vertical position
-        
-        let mut deque: VecDeque<String> = VecDeque::from(lines);
+
+        let mut deque: VecDeque<String> =
+            self.page_content.lines().map(|s| s.to_string()).collect();
 
         // since we need to wrap the lines but the width of the glyphs is not the same for all letters
         // we need to split the lines into smaller lines that fit the window width
@@ -127,24 +135,21 @@ impl State {
             let mut s = String::new();
 
             if line.len() == 0 {
-                let block = " ".draw_default(&self);
-                block.draw_onto_pixels(pixels, start_y);
                 start_y += font_height;
                 continue;
             }
 
             let words: Vec<&str> = line.split_whitespace().collect();
 
-            while (s.to_string().as_str().width(&self) < 800) && (index < words.len()) {
+            while index < words.len() && s.as_str().width(&self) < self.window_width as usize {
                 s.push_str(words[index]);
                 s.push(' ');
-
                 index += 1;
             }
 
             if words.len() > index {
-                s = words.get(0..index -1).unwrap().join(" ");
-                deque.push_front(words.get(index-1..).unwrap().join(" "));
+                s = words.get(0..index - 1).unwrap().join(" ");
+                deque.push_front(words.get(index - 1..).unwrap().join(" "));
             } else {
                 s = words.get(0..index).unwrap().join(" ");
             }
@@ -154,9 +159,14 @@ impl State {
             block.draw_onto_pixels(pixels, start_y);
             start_y += font_height;
 
-            if start_y > 580 {
+            if start_y + 4 * self.font.height() > self.window_height as usize {
                 break;
             }
         }
     }
+
+    pub(crate) fn set_address(&mut self, address: String) {
+        self.page_address = address
+    }
 }
+
