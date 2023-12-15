@@ -9,7 +9,7 @@ use winit::{
     dpi::{PhysicalSize, LogicalSize},
     event::{Event, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    window::{WindowBuilder, Window},
 };
 mod config;
 mod font;
@@ -68,7 +68,26 @@ fn main() -> Result<(), pixels::Error> {
 
     let mut input = WinitInputHelper::new();
 
-    let size = LogicalSize::new(800, 600);
+    let scale_factor = {
+        const DEFAULT_SCALE_FACTOR: f64 = 1.0;
+        let env_scale_factor = std::env::var("GEM_SCALE_FACTOR")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok().map(|f| u32::max(1, f.round() as u32)));
+        let wm_scale_factor = || {
+            let Ok(dummy) = Window::new(&event_loop) else {
+                eprintln!(
+                    "INFO:  Could not construct dummy window to measure scale factor,\
+                    assuming a factor of {DEFAULT_SCALE_FACTOR}"
+                );
+                return DEFAULT_SCALE_FACTOR;
+            };
+
+            dummy.scale_factor()
+        };
+        env_scale_factor.unwrap_or(wm_scale_factor().round() as u32)
+    };
+
+    let size = PhysicalSize::new(800 * scale_factor, 600 * scale_factor);
 
     // Create a window with a title and size
     let window = WindowBuilder::new()
@@ -94,14 +113,16 @@ fn main() -> Result<(), pixels::Error> {
         config.background,
         String::from(GEMINI_ADDRESS),
         gemini_body,
-        size.width,
-        size.height,
+        window.inner_size().width / scale_factor,
+        window.inner_size().height / scale_factor,
     );
+
+    let size = PhysicalSize::new(state.window_width, state.window_height);
 
     let mut pixels = {
         let window_size = window.inner_size();
         let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
-        PixelsBuilder::new(800, 600, surface_texture)
+        PixelsBuilder::new(size.width, size.height, surface_texture)
             .clear_color({
                 let [r, g, b, a] = config.background.map(|v| v as f64 / 255.0);
                 pixels::wgpu::Color { r, g, b, a }
@@ -133,7 +154,7 @@ fn main() -> Result<(), pixels::Error> {
                 state.draw(&mut pixels);
                 let end = std::time::Instant::now();
                 let delta = (end - start).as_secs_f32();
-                eprintln!("drawing took: {delta:.6}");
+                // eprintln!("drawing took: {delta:.6}");
 
                 // Try to render.
                 if let Err(err) = pixels.render() {
@@ -153,7 +174,7 @@ fn main() -> Result<(), pixels::Error> {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
-            let text = input.text();
+            let text: Vec<TextChar> = input.text();
             if !text.is_empty() {
                 for ch in input.text() {
                     match ch {
@@ -179,10 +200,11 @@ fn main() -> Result<(), pixels::Error> {
             if let Some(size) = input.window_resized() {
                 eprintln!("resizing");
                 let PhysicalSize { width, height } = size;
-                pixels.resize_surface(width, height).unwrap();
+                pixels.resize_surface(width * scale_factor, height * scale_factor).unwrap();
                 pixels.resize_buffer(width, height).unwrap();
-                window.set_inner_size(size);
-                state.resize(width, height);
+                window.set_inner_size(PhysicalSize::new(width, height));
+
+                state.resize(width / scale_factor, height / scale_factor);
             }
 
             window.request_redraw();

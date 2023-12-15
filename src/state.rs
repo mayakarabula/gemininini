@@ -159,7 +159,7 @@ impl State {
             block.draw_onto_pixels(pixels, start_y);
             start_y += font_height;
 
-            if start_y + 4 * self.font.height() > self.window_height as usize {
+            if start_y + 2 * self.font.height() > self.window_height as usize {
                 break;
             }
         }
