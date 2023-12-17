@@ -2,14 +2,14 @@ use pixels::Pixels;
 use std::collections::VecDeque;
 
 use crate::config::{Pixel, PIXEL_SIZE};
-use crate::font::{Font, WrappedFont};
+use crate::font::{Font};
 
 pub const NORMAL_MODE: &str = "normal";
 pub const INSERT_MODE: &str = "insert";
 pub const LINK_MODE: &str = "link";
 
 pub struct State {
-    pub font: WrappedFont,
+    pub font: Font,
     pub foreground: Pixel,
     pub background: Pixel,
     pub page_address: String,
@@ -75,14 +75,16 @@ impl Draw for &str {
         let mut x0 = 0;
 
         for g in glyphs {
-            for (y, row) in g.rows().enumerate() {
-                for (xg, &cell) in row.iter().enumerate() {
+            let glyph_width = g.width();
+
+            for (y, row) in g.enumerate() {
+                for (xg, cell) in row.enumerate() {
                     let x = x0 + xg;
                     let idx = y * width + x;
                     pixels[idx] = if cell { foreground } else { background };
                 }
             }
-            x0 += g.width();
+            x0 += glyph_width;
         }
 
         Block { height, pixels }
@@ -91,7 +93,7 @@ impl Draw for &str {
 
 impl State {
     pub fn new(
-        font: WrappedFont,
+        font: Font,
         foreground: Pixel,
         background: Pixel,
         page_address: String,
