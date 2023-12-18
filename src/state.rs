@@ -8,6 +8,11 @@ pub const NORMAL_MODE: &str = "normal";
 pub const INSERT_MODE: &str = "insert";
 pub const LINK_MODE: &str = "link";
 
+pub struct Link {
+    pub address: String,
+    pub text: String,
+}
+
 pub struct State {
     pub font: Font,
     pub foreground: Pixel,
@@ -19,6 +24,7 @@ pub struct State {
     pub content_lines: Vec<String>,
     pub starting_line: usize,
     pub mode: String,
+    pub links: Vec<Link>
 }
 
 struct Block {
@@ -112,6 +118,7 @@ impl State {
             content_lines: Vec::new(),
             starting_line: 0,
             mode: String::from("normal"),
+            links: Vec::new(),
         }
     }
 
@@ -161,7 +168,7 @@ impl State {
         self.mode = mode;
     }
 
-    pub fn draw(&self, pixels: &mut Pixels) {
+    pub fn draw(&mut self, pixels: &mut Pixels) {
         let mut start_y = 0;
         let font_height: usize = self.font.height();
 
@@ -176,6 +183,8 @@ impl State {
         let mut index = 0;
         let lines = self.content_lines.get(self.starting_line..).unwrap();
         let mut link_index = 0;
+        
+        self.links.clear();
 
         while let Some(line) = lines.get(index) {
             index += 1;
@@ -187,15 +196,29 @@ impl State {
 
             let s = line.clone();
 
-            let block = s.to_string().as_str().draw_default(&self);
-            block.draw_onto_pixels(pixels, start_y);
-
             if line.starts_with("=>") {
+                let address = line.get(2..).unwrap().split_whitespace().next().unwrap().to_string();
+                let text = line.get(2..).unwrap().replace(&address, "").trim().to_string();
+
+
                 if self.mode == LINK_MODE {
-                    let block = link_index.to_string().as_str().draw(&self, self.background, self.foreground);
+                    let mut block = format!("  {}", text).to_string().as_str().draw_default(&self);
+                    block.draw_onto_pixels(pixels, start_y);
+
+                    block = link_index.to_string()
+                        .as_str().draw(&self, self.background, self.foreground);
+                    block.draw_onto_pixels(pixels, start_y);
+                } else {
+                    let block: Block = format!("=> {}", text).to_string().as_str().draw_default(&self);
                     block.draw_onto_pixels(pixels, start_y);
                 }
+
+                self.links.push(Link { address, text });
+
                 link_index += 1;
+            } else {
+                let block: Block = s.to_string().as_str().draw_default(&self);
+                block.draw_onto_pixels(pixels, start_y);
             }
 
             start_y += font_height;

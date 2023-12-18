@@ -1,6 +1,7 @@
 #![feature(array_chunks, iter_array_chunks, slice_flatten, iter_intersperse)]
 
 use std::str::FromStr;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use gemini_fetch::Page;
@@ -51,6 +52,31 @@ fn get_gemini_page_blocking(address: &Url) -> Result<String> {
     Runtime::new().unwrap().block_on(get_gemini_page(address))
 }
 
+fn handle_address(state: &State, address: &str) -> Result<String> {
+    if address.starts_with("gemini://") || address.starts_with("http://") || address.starts_with("https://") {
+        return Ok(address.to_string());
+    } else {
+        // relative path
+        let absolute_path = resolve_url_path(state.page_address.as_str(), address);
+        Ok(absolute_path)
+    }
+}
+
+fn resolve_url_path(base_path: &str, relative_path: &str) -> String {
+    let base_url = Url::parse(base_path).expect("Failed to parse base URL");
+    let resolved_url = base_url.join(relative_path).expect("Failed to resolve URL");
+
+    resolved_url.into_string()
+}
+
+fn fetch_page(state: &mut State, address: &str) {
+    let address = handle_address(state, address).unwrap();
+    let gemini_url = Url::parse(&address).expect("Invalid URL");
+
+    let gemini_body = get_gemini_page_blocking(&gemini_url).expect("Error fetching Gemini page");
+    state.update(address, gemini_body);
+}
+
 fn main() -> Result<(), pixels::Error> {
     let config = match configure() {
         Ok(args) => args,
@@ -60,8 +86,6 @@ fn main() -> Result<(), pixels::Error> {
             std::process::exit(1);
         }
     };
-
-    let gemini_url = Url::parse(GEMINI_ADDRESS).expect("Invalid URL");
 
     // Create an event loop
     let event_loop = EventLoop::new();
@@ -105,17 +129,17 @@ fn main() -> Result<(), pixels::Error> {
         }
     };
 
-    let gemini_body = get_gemini_page_blocking(&gemini_url).expect("Error fetching Gemini page");
-
     let mut state = State::new(
         font,
         config.foreground,
         config.background,
         String::from(GEMINI_ADDRESS),
-        gemini_body,
+        String::from(""),
         window.inner_size().width / scale_factor,
         window.inner_size().height / scale_factor,
     );
+
+    fetch_page(&mut state, GEMINI_ADDRESS);
 
     state.prepare_lines();
 
@@ -138,36 +162,6 @@ fn main() -> Result<(), pixels::Error> {
     // Main event loop
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
-
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => *control_flow = ControlFlow::Exit,
-
-            Event::RedrawRequested(_) => {
-                // Clear the screen before drawing.
-                pixels
-                    .frame_mut()
-                    .array_chunks_mut()
-                    .for_each(|px| *px = config.background);
-
-                let start = std::time::Instant::now();
-                state.draw(&mut pixels);
-                let end = std::time::Instant::now();
-                let delta = (end - start).as_secs_f32();
-                // eprintln!("drawing took: {delta:.6}");
-
-                // Try to render.
-                if let Err(err) = pixels.render() {
-                    eprintln!("ERROR: {err}");
-                    *control_flow = ControlFlow::Exit;
-                    return;
-                }
-            }
-
-            _ => (),
-        }
 
         if input.update(&event) {
             // Close events.
@@ -245,5 +239,55 @@ fn main() -> Result<(), pixels::Error> {
             state.prepare_lines();
             window.request_redraw();
         }
+
+        match event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
+                }
+                WindowEvent::ReceivedCharacter(c) => {
+                    if state.mode == LINK_MODE && (c as usize >= 48) {
+                        state.set_mode(String::from(NORMAL_MODE));
+                        
+                        let index = c as usize - 48;
+                        if index < state.links.len() {
+                            let address = handle_address(&state, state.links.get(index).unwrap().address.as_str()).unwrap();
+                            fetch_page(&mut state, &address);
+                        }
+                    }
+                }
+                WindowEvent::KeyboardInput { input, .. } => {
+                    if let Some(VirtualKeyCode::Escape) = input.virtual_keycode {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+                _ => (),
+            }
+
+            Event::RedrawRequested(_) => {
+                // Clear the screen before drawing.
+                pixels
+                    .frame_mut()
+                    .array_chunks_mut()
+                    .for_each(|px| *px = config.background);
+
+                let start = std::time::Instant::now();
+                state.draw(&mut pixels);
+                let end = std::time::Instant::now();
+                let delta = (end - start).as_secs_f32();
+                // eprintln!("drawing took: {delta:.6}");
+
+                // Try to render.
+                if let Err(err) = pixels.render() {
+                    eprintln!("ERROR: {err}");
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+            },        
+
+            _ => (),
+        }
+
+       
     });
 }
