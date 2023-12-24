@@ -1,293 +1,298 @@
-#![feature(array_chunks, iter_array_chunks, slice_flatten, iter_intersperse)]
+#![feature(array_chunks)]
 
-use std::str::FromStr;
-use std::path::{Path, PathBuf};
-
-use anyhow::Result;
-use gemini_fetch::Page;
-use tokio::runtime::Runtime;
-use winit::{
-    dpi::{PhysicalSize, LogicalSize},
-    event::{Event, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::{WindowBuilder, Window},
-};
-mod config;
-mod font;
-mod state;
-
-use config::configure;
-use state::{State, NORMAL_MODE, INSERT_MODE, LINK_MODE};
-use url::Url;
-
+use fleck::Font;
 use pixels::wgpu::BlendState;
-
 use pixels::{PixelsBuilder, SurfaceTexture};
+use gemininini::elements::{Alignment, WrappedText};
+use gemininini::elements::{Element, ElementKind};
+use gemininini::Raam;
+use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::event::{Event, VirtualKeyCode};
+use winit::event_loop::EventLoop;
+use winit::window::{Window, WindowBuilder};
 use winit_input_helper::{TextChar, WinitInputHelper};
+use request::fetch_page;
 
-const GEMINI_ADDRESS: &str = "gemini://mayaks.eu/";
+mod request;
 
-async fn get_gemini_page(address: &Url) -> Result<String> {
-    match Page::fetch(address, None).await {
-        Ok(page) => {
-            // Handle the fetched Gemini page
-            println!("URL: {}", page.url);
-            println!("Status: {:?}", page.header.status);
-            println!("Meta: {}", page.header.meta);
-            if let Some(body) = page.body {
-                Ok(body)
-            } else {
-                Ok("No body found in the Gemini page".to_string())
-            }
-        }
-        Err(err) => {
-            // Handle errors
-            eprintln!("Error: {}", err);
-            Ok("Error fetching Gemini page".to_string())
-        }
+const WINDOW_NAME: &str = env!("CARGO_BIN_NAME");
+
+const SCROLL_STEP: usize = 8;
+
+fn setup_window(min_size: PhysicalSize<u32>, event_loop: &EventLoop<()>) -> Window {
+    let builder = WindowBuilder::new()
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_resizable(true)
+        .with_title(WINDOW_NAME)
+        .with_inner_size(min_size)
+        .with_min_inner_size(min_size);
+
+    builder.build(event_loop).expect("could not build window")
+}
+
+fn load_font(path: &str) -> std::io::Result<Font> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    assert_eq!(buf.len(), fleck::FILE_SIZE);
+    let font = Font::new(buf.as_slice().try_into().unwrap());
+    Ok(font)
+}
+
+fn setup_elements() -> Element<Data> {
+    fn display_address(thing: &mut ElementKind<Data>, data: &Data) {
+        // TODO: This whole practice is a mess and is horrible and oh no.
+        let ElementKind::Text(text) = thing else {
+            unreachable!()
+        };
+        text.clear();
+        text.push_str(data.address.as_str())
+    }
+
+    fn update_scroll(thing: &mut ElementKind<Data>, data: &Data) {
+        // TODO: This whole practice is a mess and is horrible and oh no.
+        let ElementKind::Scroll(_, _, pos) = thing else {
+            unreachable!()
+        };
+        eprint!("updating scroll from {pos}");
+        *pos = data.scroll_pos;
+        eprint!(" to {pos}");
+    }
+
+    fn display_text(thing: &mut ElementKind<Data>, data: &Data) {
+        // TODO: This whole practice is a mess and is horrible and oh no.
+        let ElementKind::Paragraph(text, width, _) = thing else {
+            unreachable!()
+        };
+        *text = WrappedText::new(&data.text, *width, &data.font)
+    }
+
+    fn display_mode(thing: &mut ElementKind<Data>, data: &Data) {
+        // TODO: This whole practice is a mess and is horrible and oh no.
+        let ElementKind::Text(text) = thing else {
+            unreachable!()
+        };
+        text.clear();
+        text.push_str(data.mode.to_string().as_str())
+    }
+
+    {
+        use ElementKind::*;
+        Element::still(Stack(vec![
+            Element::dynamic(display_address, Text("---".to_string())),
+            Element::dynamic(
+                update_scroll,
+                Scroll(
+                    Box::new(
+                        Element::dynamic(display_text, Paragraph(WrappedText::default(), 600, 400))
+                            .with_alignment(Alignment::Center),
+                    ),
+                    300,
+                    0,
+                ),
+            ),
+            Element::dynamic(display_mode, Text("---".to_string())),
+        ]))
     }
 }
 
-fn get_gemini_page_blocking(address: &Url) -> Result<String> {
-    Runtime::new().unwrap().block_on(get_gemini_page(address))
+struct Data {
+    text: String,
+    scroll_pos: usize,
+    address: String,
+    mode: Mode,
+    // TODO: Implement scrolling on Paragraph (through some kind of wrapper?). May in fact become a
+    // neat showcase of the notion of custom (wrapper) elements?
+    // scroll: usize,
+    font: Box<Font>,
 }
 
-fn handle_address(state: &State, address: &str) -> Result<String> {
-    if address.starts_with("gemini://") || address.starts_with("http://") || address.starts_with("https://") {
-        return Ok(address.to_string());
-    } else {
-        // relative path
-        let absolute_path = resolve_url_path(state.page_address.as_str(), address);
-        Ok(absolute_path)
+#[derive(PartialEq, Eq)]
+enum Mode {
+    Normal,
+    Insert,
+    Link,
+}
+
+impl ToString for Mode {
+    fn to_string(&self) -> String {
+        match self {
+            Mode::Normal => "normal".to_string(),
+            Mode::Insert => "insert".to_string(),
+            Mode::Link => "link".to_string(),
+        }
     }
-}
-
-fn resolve_url_path(base_path: &str, relative_path: &str) -> String {
-    let base_url = Url::parse(base_path).expect("Failed to parse base URL");
-    let resolved_url = base_url.join(relative_path).expect("Failed to resolve URL");
-
-    resolved_url.into_string()
-}
-
-fn fetch_page(state: &mut State, address: &str) {
-    let address = handle_address(state, address).unwrap();
-    let gemini_url = Url::parse(&address).expect("Invalid URL");
-
-    let gemini_body = get_gemini_page_blocking(&gemini_url).expect("Error fetching Gemini page");
-    state.update(address, gemini_body);
 }
 
 fn main() -> Result<(), pixels::Error> {
-    let config = match configure() {
-        Ok(args) => args,
-        Err(err) => {
-            eprintln!("ERROR: {err}");
-            eprintln!("Run with --help for usage information.");
-            std::process::exit(1);
-        }
-    };
-
-    // Create an event loop
-    let event_loop = EventLoop::new();
-
-    let mut input = WinitInputHelper::new();
-
-    let scale_factor = {
-        const DEFAULT_SCALE_FACTOR: f64 = 1.0;
-        let env_scale_factor = std::env::var("GEM_SCALE_FACTOR")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok().map(|f| u32::max(1, f.round() as u32)));
-        let wm_scale_factor = || {
-            let Ok(dummy) = Window::new(&event_loop) else {
-                eprintln!(
-                    "INFO:  Could not construct dummy window to measure scale factor,\
-                    assuming a factor of {DEFAULT_SCALE_FACTOR}"
-                );
-                return DEFAULT_SCALE_FACTOR;
-            };
-
-            dummy.scale_factor()
-        };
-        env_scale_factor.unwrap_or(wm_scale_factor().round() as u32)
-    };
-
-    let size = PhysicalSize::new(800 * scale_factor, 600 * scale_factor);
-
-    // Create a window with a title and size
-    let window = WindowBuilder::new()
-        .with_title("Gemini client with uf2")
-        .with_inner_size(size)
-        .build(&event_loop)
-        .expect("Failed to create window");
-
-    let font_path = config.font_path;
-    let font = match font::load_font(&font_path) {
+    let mut args = std::env::args().skip(1);
+    let font_path = args
+        .next()
+        .unwrap_or("/etc/tid/fonts/geneva14.uf2".to_string());
+    let font = match load_font(&font_path) {
         Ok(font) => font,
         Err(err) => {
             eprintln!("ERROR: Failed to load font from {font_path:?}: {err}");
             std::process::exit(1);
         }
     };
+    let font = Box::new(font);
 
-    let mut state = State::new(
+    let event_loop = EventLoop::new();
+
+    let scale_factor = std::env::var("TID_SCALE_FACTOR")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|v| v.round() as u32)
+        .unwrap_or(1);
+
+    let elements = setup_elements();
+    let data = Data {
+        text: fetch_page("gemini://mayaks.eu/", "gemini://mayaks.eu/"),
+        scroll_pos: 0,
+        address: "gemini://example.com/".to_string(),
+        mode: Mode::Normal,
+        font: font.clone(), // TODO: Completely unnecessary with some better design. But it works.
+    };
+    let mut state = Raam::new(
+        elements,
         font,
-        config.foreground,
-        config.background,
-        String::from(GEMINI_ADDRESS),
-        String::from(""),
-        window.inner_size().width / scale_factor,
-        window.inner_size().height / scale_factor,
+        [0x00, 0x00, 0x00, 0xff],
+        [0xff, 0xff, 0xff, 0xff],
+        data,
     );
 
-    fetch_page(&mut state, GEMINI_ADDRESS);
+    let (width, height) = (state.width, state.height);
+    let size = PhysicalSize::new(width * scale_factor, height * scale_factor);
 
-    state.prepare_lines();
-
-    let size = PhysicalSize::new(state.window_width, state.window_height);
+    let mut input = WinitInputHelper::new();
+    let window = setup_window(size, &event_loop);
 
     let mut pixels = {
         let window_size = window.inner_size();
         let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
-        PixelsBuilder::new(size.width, size.height, surface_texture)
+        PixelsBuilder::new(width, height, surface_texture)
             .clear_color({
-                let [r, g, b, a] = config.background.map(|v| v as f64 / 255.0);
+                let [r, g, b, a] = state.background.map(|v| v as f64 / u8::MAX as f64);
                 pixels::wgpu::Color { r, g, b, a }
             })
             .blend_state(BlendState::REPLACE) // TODO: Investigate rendering weirdness.
             .build()?
     };
 
-    let mut address = String::new();
-
-    // Main event loop
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-
-        if input.update(&event) {
-            // Close events.
-            if input.close_requested() {
-                eprintln!("INFO:  Close requested. Bye :)");
-                *control_flow = ControlFlow::Exit;
-                return;
-            }
-            let text: Vec<TextChar> = input.text();
-            if !text.is_empty() && state.mode == INSERT_MODE {
-                for ch in input.text() {
-                    match ch {
-                        TextChar::Char(ch) => address.push(ch),
-                        TextChar::Back => {
-                            address.pop();
-                        }
-                    }
-                }
-                eprintln!("current address: {address}");
-                state.set_address(address.clone());
-            }
-
-            if input.key_pressed(VirtualKeyCode::Up) || 
-                ((input.key_pressed(VirtualKeyCode::K) && state.mode == NORMAL_MODE)) {
-                if state.starting_line > 0 {
-                    state.set_starting_line(state.starting_line - 1);
-                }
-            }
-
-            if input.key_pressed(VirtualKeyCode::Down) ||
-                ((input.key_pressed(VirtualKeyCode::J) && state.mode == NORMAL_MODE)) {
-                if state.starting_line < state.content_lines.len() {
-                    state.set_starting_line(state.starting_line + 1);
-                }
-            }
-
-            if input.key_pressed(VirtualKeyCode::O) || input.key_pressed(VirtualKeyCode::I) {
-                if state.mode == NORMAL_MODE {
-                    state.set_mode(String::from(INSERT_MODE));
-                }
-            }
-
-            if input.key_pressed(VirtualKeyCode::F) {
-                if state.mode == NORMAL_MODE {
-                    state.set_mode(String::from(LINK_MODE));
-                }
-            }
-
-            if input.key_pressed(VirtualKeyCode::Escape) {
-                if state.mode != NORMAL_MODE {
-                    state.set_mode(String::from(NORMAL_MODE));
-                }
-            }
-
-            if input.key_pressed(VirtualKeyCode::Return) {
-                eprintln!("fetching address: {address}");
-                let content = get_gemini_page_blocking(&Url::from_str(&address).unwrap()).unwrap();
-                eprintln!("content: {content}");
-                state.update(address.clone(), content);
-                address.clear();
-                state.set_mode(String::from(NORMAL_MODE));
-            }
-
-            // Resize the window.
-            if let Some(size) = input.window_resized() {
-                eprintln!("resizing");
-                let PhysicalSize { width, height } = size;
-                pixels.resize_surface(width * scale_factor, height * scale_factor).unwrap();
-                pixels.resize_buffer(width, height).unwrap();
-                window.set_inner_size(PhysicalSize::new(width, height));
-
-                state.resize(width / scale_factor, height / scale_factor);
-            }
-
-            state.prepare_lines();
-            window.request_redraw();
-        }
+        control_flow.set_poll();
 
         match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
-                }
-                WindowEvent::ReceivedCharacter(c) => {
-                    if state.mode == LINK_MODE && (c as usize >= 48) {
-                        state.set_mode(String::from(NORMAL_MODE));
-                        
-                        let index = c as usize - 48;
-                        if index < state.links.len() {
-                            let address = handle_address(&state, state.links.get(index).unwrap().address.as_str()).unwrap();
-                            fetch_page(&mut state, &address);
-                        }
-                    }
-                }
-                WindowEvent::KeyboardInput { input, .. } => {
-                    if let Some(VirtualKeyCode::Escape) = input.virtual_keycode {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                }
-                _ => (),
-            }
-
+            // Event::NewEvents(winit::event::StartCause::ResumeTimeReached { .. }) => {
+            //     window.request_redraw()
+            // }
             Event::RedrawRequested(_) => {
                 // Clear the screen before drawing.
                 pixels
                     .frame_mut()
                     .array_chunks_mut()
-                    .for_each(|px| *px = config.background);
+                    .for_each(|px| *px = state.background);
 
-                let start = std::time::Instant::now();
-                state.draw(&mut pixels);
-                let end = std::time::Instant::now();
-                let delta = (end - start).as_secs_f32();
-                // eprintln!("drawing took: {delta:.6}");
+                eprintln!("INFO: Redrawing...");
+                // Update the state, then draw.
+                state.update();
+                state.draw(&mut pixels.frame_mut());
 
                 // Try to render.
                 if let Err(err) = pixels.render() {
                     eprintln!("ERROR: {err}");
-                    *control_flow = ControlFlow::Exit;
+                    control_flow.set_exit();
                     return;
                 }
-            },        
-
+            }
             _ => (),
         }
 
-       
+        if input.update(&event) {
+            // Scroll around.
+            if input.key_pressed(VirtualKeyCode::Up) | input.key_pressed(VirtualKeyCode::K) {
+                let pos = &mut state.data_mut().scroll_pos;
+                *pos = pos.saturating_sub(SCROLL_STEP);
+                window.request_redraw();
+            }
+
+            if input.key_pressed(VirtualKeyCode::Down) | input.key_pressed(VirtualKeyCode::J) {
+                state.data_mut().scroll_pos += SCROLL_STEP;
+                window.request_redraw();
+            }
+
+            // Set mode.
+            {
+                let data = state.data_mut();
+                let mode = &mut data.mode;
+
+                match mode {
+                    Mode::Normal => {
+                        if input.key_pressed(VirtualKeyCode::I) {
+                            *mode = Mode::Insert;
+                            window.request_redraw();
+                        }
+                        if input.key_pressed(VirtualKeyCode::F) {
+                            eprintln!(
+                                "TODO: The implementation of `Mode::Link` has been \
+                                left as an exercise to cute ppl. <3"
+                            );
+                            *mode = Mode::Link;
+                            window.request_redraw();
+                        }
+                    }
+                    Mode::Insert => {
+                        for ch in input.text() {
+                            match ch {
+                                TextChar::Char('\n') => {
+                                    data.address.clear();
+                                    eprintln!("Please pretend some other site's text is loading.")
+                                }
+                                TextChar::Char(ch) => data.address.push(ch),
+                                TextChar::Back => {
+                                    let _ = data.address.pop();
+                                }
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    Mode::Link => { /* TODO */ }
+                }
+
+                if input.key_pressed(VirtualKeyCode::Escape) {
+                    *mode = Mode::Normal;
+                    window.request_redraw();
+                }
+            }
+
+            // Close events.
+            if input.close_requested() {
+                eprintln!("INFO:  Close requested. Bye :)");
+                control_flow.set_exit();
+                return;
+            }
+
+            // Resize the window.
+            if let Some(size) = input.window_resized() {
+                eprintln!("INFO:  Resize request {size:?}");
+                let ps = PhysicalSize {
+                    width: (size.width / scale_factor) * scale_factor,
+                    height: (size.height / scale_factor) * scale_factor,
+                };
+                let ls = LogicalSize {
+                    width: ps.width / scale_factor,
+                    height: ps.height / scale_factor,
+                };
+                pixels.resize_surface(ps.width, ps.height).unwrap();
+                pixels.resize_buffer(ls.width, ls.height).unwrap();
+                window.set_inner_size(ps);
+                state.resize(ls.width, ls.height);
+
+                window.request_redraw();
+            }
+        }
     });
 }
