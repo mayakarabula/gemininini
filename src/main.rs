@@ -17,6 +17,8 @@ mod request;
 
 const WINDOW_NAME: &str = env!("CARGO_BIN_NAME");
 
+const GEMINI_ADDRESS: &str = "gemini://mayaks.eu/";
+
 const SCROLL_STEP: usize = 8;
 
 fn setup_window(min_size: PhysicalSize<u32>, event_loop: &EventLoop<()>) -> Window {
@@ -41,7 +43,7 @@ fn load_font(path: &str) -> std::io::Result<Font> {
     Ok(font)
 }
 
-fn setup_elements() -> Element<Data> {
+fn setup_elements(data: &Data) -> Element<Data> {
     fn display_address(thing: &mut ElementKind<Data>, data: &Data) {
         // TODO: This whole practice is a mess and is horrible and oh no.
         let ElementKind::Text(text) = thing else {
@@ -78,6 +80,10 @@ fn setup_elements() -> Element<Data> {
         text.push_str(data.mode.to_string().as_str())
     }
 
+    let height = data.text.lines().count() * data.font.height() as usize;
+
+    println!("height: {}", height   );
+
     {
         use ElementKind::*;
         Element::still(Stack(vec![
@@ -86,8 +92,8 @@ fn setup_elements() -> Element<Data> {
                 update_scroll,
                 Scroll(
                     Box::new(
-                        Element::dynamic(display_text, Paragraph(WrappedText::default(), 600, 400))
-                            .with_alignment(Alignment::Center),
+                        Element::dynamic(display_text, Paragraph(WrappedText::default(), 600, height))
+                            .with_alignment(Alignment::Left),
                     ),
                     300,
                     0,
@@ -148,14 +154,16 @@ fn main() -> Result<(), pixels::Error> {
         .map(|v| v.round() as u32)
         .unwrap_or(1);
 
-    let elements = setup_elements();
     let data = Data {
-        text: fetch_page("gemini://mayaks.eu/", "gemini://mayaks.eu/"),
+        text: fetch_page(GEMINI_ADDRESS, GEMINI_ADDRESS),
         scroll_pos: 0,
-        address: "gemini://example.com/".to_string(),
+        address: GEMINI_ADDRESS.to_string(),
         mode: Mode::Normal,
         font: font.clone(), // TODO: Completely unnecessary with some better design. But it works.
     };
+    println!("data.text: {:?}", &data.text);
+    
+    let elements = setup_elements(&data);
     let mut state = Raam::new(
         elements,
         font,
@@ -233,6 +241,7 @@ fn main() -> Result<(), pixels::Error> {
                     Mode::Normal => {
                         if input.key_pressed(VirtualKeyCode::I) {
                             *mode = Mode::Insert;
+                            data.address.clear();
                             window.request_redraw();
                         }
                         if input.key_pressed(VirtualKeyCode::F) {
@@ -245,13 +254,20 @@ fn main() -> Result<(), pixels::Error> {
                         }
                     }
                     Mode::Insert => {
+                        if input.key_pressed(VirtualKeyCode::Return) {
+                            println!("Fetching {}", &data.address);
+
+                            data.text = fetch_page(&data.address, &data.address);
+                            window.request_redraw();
+                        }
+
                         for ch in input.text() {
                             match ch {
-                                TextChar::Char('\n') => {
-                                    data.address.clear();
-                                    eprintln!("Please pretend some other site's text is loading.")
-                                }
-                                TextChar::Char(ch) => data.address.push(ch),
+                                TextChar::Char(ch) => {
+                                    println!("Inserting {}", ch);
+                                    
+                                    data.address.push(ch);
+                                },
                                 TextChar::Back => {
                                     let _ = data.address.pop();
                                 }

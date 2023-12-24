@@ -288,7 +288,7 @@ impl<D> DrawBlock for Element<D> {
             }
             ElementKind::Scroll(element, height, pos) => {
                 // We can just skip drawing anything if the content is scrolled out of view.
-                if height > pos {
+                if &element.block_height(font) > pos {
                     let mut scrollable = element.block(font);
 
                     // We cut off the top of this block by `pos` rows, but not beyond the height of the

@@ -3,8 +3,6 @@ use gemini_fetch::Page;
 use anyhow::Result;
 use tokio::runtime::Runtime;
 
-const GEMINI_ADDRESS: &str = "gemini://mayaks.eu/";
-
 async fn get_gemini_page(address: &Url) -> Result<String> {
     match Page::fetch(address, None).await {
         Ok(page) => {
