@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use crate::{elements::Style, Pixel};
+
 // TODO: (easy) Isn't there a std lib type for this?! I'm pretty sure there is. Just moving on now.
 #[derive(Default)]
 struct Range {
@@ -85,6 +87,34 @@ impl Graph {
             return max;
         }
         self.iter().fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    /// Paint the graph onto a pixel buffer with a specified height.
+    ///
+    /// All values represented within the graph are mapped the pixels, such that `min` point of the
+    /// [`Graph`] is drawn on the lowest row of the pixel buffer, and the `max` point on the first
+    /// row.
+    ///
+    /// The width of the pixel buffer is expected to be equal to its length divided by the provided
+    /// height. The length of the [`Graph`] must be equal to that width.
+    ///
+    /// The foreground and background colors are provided through `style`.
+    pub fn paint(&self, buf: &mut [Pixel], height: u32, style: &Style) {
+        let width = self.len();
+        assert_eq!(buf.len(), width * height as usize);
+
+        let min = self.min();
+        let max = self.max();
+        let delta = max - min;
+        let factor = height.saturating_sub(1) as f32 / delta;
+
+        buf.fill(style.background);
+        for (x, y) in self.iter().enumerate() {
+            let y = (y - min) * factor;
+            let y = y.round() as usize;
+            let idx = y * width + x;
+            buf[idx] = style.foreground;
+        }
     }
 }
 

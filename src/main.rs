@@ -1,23 +1,24 @@
 #![feature(array_chunks)]
 
-use fleck::Font;
+use std::rc::Rc;
+
+mod request;
+
+use request::fetch_page;
 use pixels::wgpu::BlendState;
 use pixels::{PixelsBuilder, SurfaceTexture};
-use gemininini::elements::{Alignment, WrappedText};
-use gemininini::elements::{Element, ElementKind};
-use gemininini::Raam;
+use gemininini::elements::builder::ElementBuilder;
+use gemininini::elements::{Alignment, Content, Element, SizingStrategy, WrappedText};
+use gemininini::Font;
+use gemininini::Panel;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{Event, VirtualKeyCode};
 use winit::event_loop::EventLoop;
 use winit::window::{Window, WindowBuilder};
 use winit_input_helper::{TextChar, WinitInputHelper};
-use request::fetch_page;
 
-mod request;
 
 const WINDOW_NAME: &str = env!("CARGO_BIN_NAME");
-
-const GEMINI_ADDRESS: &str = "gemini://mayaks.eu/";
 
 const SCROLL_STEP: usize = 8;
 
@@ -33,75 +34,85 @@ fn setup_window(min_size: PhysicalSize<u32>, event_loop: &EventLoop<()>) -> Wind
     builder.build(event_loop).expect("could not build window")
 }
 
-fn load_font(path: &str) -> std::io::Result<Font> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)?;
-    assert_eq!(buf.len(), fleck::FILE_SIZE);
-    let font = Font::new(buf.as_slice().try_into().unwrap());
-    Ok(font)
-}
-
-fn setup_elements(data: &Data) -> Element<Data> {
-    fn display_address(thing: &mut ElementKind<Data>, data: &Data) {
+fn setup_elements(font: Rc<Font>) -> Element<Data> {
+    fn display_address(element: &mut Element<Data>, data: &Data) {
         // TODO: This whole practice is a mess and is horrible and oh no.
-        let ElementKind::Text(text) = thing else {
+        let Content::Text(text, _) = &mut element.content else {
             unreachable!()
         };
         text.clear();
         text.push_str(data.address.as_str())
     }
 
-    fn update_scroll(thing: &mut ElementKind<Data>, data: &Data) {
+    fn display_text(element: &mut Element<Data>, data: &Data) {
         // TODO: This whole practice is a mess and is horrible and oh no.
-        let ElementKind::Scroll(_, _, pos) = thing else {
+        let Content::Paragraph(text, _) = &mut element.content else {
             unreachable!()
         };
-        eprint!("updating scroll from {pos}");
-        *pos = data.scroll_pos;
-        eprint!(" to {pos}");
+
+        element.size.maxwidth = Some(data.width);
+        element.size.minwidth = Some(data.width);
+
+        *text = WrappedText::new(data.text.clone(), data.width, &element.style.font)
     }
 
-    fn display_text(thing: &mut ElementKind<Data>, data: &Data) {
-        // TODO: This whole practice is a mess and is horrible and oh no.
-        let ElementKind::Paragraph(text, width, _) = thing else {
-            unreachable!()
-        };
-        *text = WrappedText::new(&data.text, *width, &data.font)
+    fn update_scroll_container(element: &mut Element<Data>, data: &Data) {
+        // Set scroll position.
+        element.scroll = Some(data.scroll_pos as u32);
+        // Update the height of the scroll container.
+        element.size.maxheight = data
+            .height
+            .checked_sub(2 * element.style.font.height() as u32);
+        element.size.minheight = data
+            .height
+            .checked_sub(2 * element.style.font.height() as u32);
     }
 
-    fn display_mode(thing: &mut ElementKind<Data>, data: &Data) {
+    fn display_mode(element: &mut Element<Data>, data: &Data) {
         // TODO: This whole practice is a mess and is horrible and oh no.
-        let ElementKind::Text(text) = thing else {
+        let Content::Text(text, _) = &mut element.content else {
             unreachable!()
         };
         text.clear();
         text.push_str(data.mode.to_string().as_str())
     }
 
-    let height = data.text.lines().count() * data.font.height() as usize;
-
-    println!("height: {}", height   );
-
-    {
-        use ElementKind::*;
-        Element::still(Stack(vec![
-            Element::dynamic(display_address, Text("---".to_string())),
-            Element::dynamic(
-                update_scroll,
-                Scroll(
-                    Box::new(
-                        Element::dynamic(display_text, Paragraph(WrappedText::default(), 600, height))
-                            .with_alignment(Alignment::Left),
-                    ),
-                    300,
-                    0,
-                ),
-            ),
-            Element::dynamic(display_mode, Text("---".to_string())),
-        ]))
+    fn resize_height(element: &mut Element<Data>, data: &Data) {
+        element.size.maxheight = Some(data.height);
+        element.size.minheight = Some(data.height);
     }
+
+    Element::stack_builder(&font)
+        .with_update(resize_height)
+        .add_child(
+            Element::text("---", &font)
+                .with_update(display_address)
+                .with_alignment(Alignment::Left)
+                .build(),
+        )
+        .add_child(
+            Element::stack_builder(&font)
+                .with_update(update_scroll_container)
+                .add_child(
+                    Element::empty_paragraph(&font)
+                        .with_update(display_text)
+                        .with_alignment(Alignment::Left)
+                        .build()
+                        .with_strategy(SizingStrategy::Chonker)
+                )
+                .build()
+                .with_scroll(0)
+                .with_minwidth(600)
+                .with_maxheight(400)
+                .with_minheight(400)
+        )
+        .add_child(
+            Element::text("---", &font)
+                .with_update(display_mode)
+                .with_alignment(Alignment::Left)
+                .build(),
+        )
+        .build()
 }
 
 struct Data {
@@ -109,10 +120,8 @@ struct Data {
     scroll_pos: usize,
     address: String,
     mode: Mode,
-    // TODO: Implement scrolling on Paragraph (through some kind of wrapper?). May in fact become a
-    // neat showcase of the notion of custom (wrapper) elements?
-    // scroll: usize,
-    font: Box<Font>,
+    width: u32,
+    height: u32,
 }
 
 #[derive(PartialEq, Eq)]
@@ -137,14 +146,14 @@ fn main() -> Result<(), pixels::Error> {
     let font_path = args
         .next()
         .unwrap_or("/etc/tid/fonts/geneva14.uf2".to_string());
-    let font = match load_font(&font_path) {
+    let font = match Font::load_from_file(&font_path) {
         Ok(font) => font,
         Err(err) => {
             eprintln!("ERROR: Failed to load font from {font_path:?}: {err}");
             std::process::exit(1);
         }
     };
-    let font = Box::new(font);
+    let font = Rc::new(font);
 
     let event_loop = EventLoop::new();
 
@@ -154,19 +163,17 @@ fn main() -> Result<(), pixels::Error> {
         .map(|v| v.round() as u32)
         .unwrap_or(1);
 
+    let elements = setup_elements(font);
     let data = Data {
-        text: fetch_page(GEMINI_ADDRESS, GEMINI_ADDRESS),
+        text: fetch_page("gemini://gemini.cyberbot.space/", "gemini://gemini.cyberbot.space/"),
         scroll_pos: 0,
-        address: GEMINI_ADDRESS.to_string(),
+        address: "gemini://gemini.cyberbot.space/".to_string(),
         mode: Mode::Normal,
-        font: font.clone(), // TODO: Completely unnecessary with some better design. But it works.
+        width: 0,
+        height: 0,
     };
-    println!("data.text: {:?}", &data.text);
-    
-    let elements = setup_elements(&data);
-    let mut state = Raam::new(
+    let mut state = Panel::new(
         elements,
-        font,
         [0x00, 0x00, 0x00, 0xff],
         [0xff, 0xff, 0xff, 0xff],
         data,
@@ -174,6 +181,9 @@ fn main() -> Result<(), pixels::Error> {
 
     let (width, height) = (state.width, state.height);
     let size = PhysicalSize::new(width * scale_factor, height * scale_factor);
+
+    state.data_mut().width = width;
+    state.data_mut().height = height;
 
     let mut input = WinitInputHelper::new();
     let window = setup_window(size, &event_loop);
@@ -241,7 +251,6 @@ fn main() -> Result<(), pixels::Error> {
                     Mode::Normal => {
                         if input.key_pressed(VirtualKeyCode::I) {
                             *mode = Mode::Insert;
-                            data.address.clear();
                             window.request_redraw();
                         }
                         if input.key_pressed(VirtualKeyCode::F) {
@@ -254,20 +263,13 @@ fn main() -> Result<(), pixels::Error> {
                         }
                     }
                     Mode::Insert => {
-                        if input.key_pressed(VirtualKeyCode::Return) {
-                            println!("Fetching {}", &data.address);
-
-                            data.text = fetch_page(&data.address, &data.address);
-                            window.request_redraw();
-                        }
-
                         for ch in input.text() {
                             match ch {
-                                TextChar::Char(ch) => {
-                                    println!("Inserting {}", ch);
-                                    
-                                    data.address.push(ch);
-                                },
+                                TextChar::Char('\n') => {
+                                    data.address.clear();
+                                    eprintln!("Please pretend some other site's text is loading.")
+                                }
+                                TextChar::Char(ch) => data.address.push(ch),
                                 TextChar::Back => {
                                     let _ = data.address.pop();
                                 }
@@ -306,7 +308,8 @@ fn main() -> Result<(), pixels::Error> {
                 pixels.resize_buffer(ls.width, ls.height).unwrap();
                 window.set_inner_size(ps);
                 state.resize(ls.width, ls.height);
-
+                state.data_mut().width = ls.width;
+                state.data_mut().height = ls.height;
                 window.request_redraw();
             }
         }

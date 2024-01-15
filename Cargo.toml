@@ -20,4 +20,5 @@ winit_input_helper = "0.14.0"
 psf2 = "0.4.0"
 pixels = "0.13.0"
 lexopt = "0.3.0"
-fleck = "0.1.0"
+fleck = "0.2.0"
+
